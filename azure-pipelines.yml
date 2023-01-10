@@ -1,0 +1,83 @@
+trigger:
+- main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  GOBIN:  '$(GOPATH)/bin'
+  GOPATH: '$(system.defaultWorkingDirectory)/gopath'
+  modulePath: 'github.com/$(build.repository.name)/src'
+  imageName: 'golang-sample'
+  trivyVersion: 0.9.1
+  registry: 'golang-docker'
+  containerRegistry: 'ravirajput.azurecr.io'
+  imagePullSecret: 'auth'
+  namespace: 'default'
+  kubernetesServiceConnection: 'test'
+
+steps:
+- script: |
+    go mod init simple-go/helloworld
+    go mod tidy
+    go get github.com/gin-gonic/gin
+    go get github.com/gin-gonic/contrib/static   
+  displayName: 'Set up the Go workspace'
+  workingDirectory: src
+
+- script: |
+    sudo apt-get install rpm
+    wget https://github.com/aquasecurity/trivy/releases/download/v$(trivyVersion)/trivy_$(trivyVersion)_Linux-64bit.deb
+    sudo dpkg -i trivy_$(trivyVersion)_Linux-64bit.deb
+    trivy -v
+  displayName: 'Download and install Trivy'
+      
+- task: Docker@2
+  displayName: 'Build Docker images for Go application'
+  inputs:
+    containerRegistry: $(registry)
+    repository: '$(imageName)'
+    command: 'build'
+    Dockerfile: '**/Dockerfile'
+
+- task: CmdLine@2
+  displayName: "Trivy scan"
+  inputs:
+    script: |
+      trivy image $(containerRegistry)/$(imageName):$(Build.BuildId)
+  
+- task: CmdLine@2
+  displayName: "Validate the Trivy scan"
+  inputs:
+    script: |
+      trivy image --exit-code 0 --severity LOW,MEDIUM $(containerRegistry)/$(imageName):$(Build.BuildId)
+     #trivy image --exit-code 1 --severity HIGH,CRITICAL $(containerRegistry)/$(imageName):$(Build.BuildId)
+
+- task: Docker@2
+  displayName: 'Docker Push'
+  inputs:
+    containerRegistry: $(registry)
+    repository: '$(imageName)'
+    command: 'push'
+
+- task: KubernetesManifest@0
+  displayName: 'Create Image pull secret'
+  inputs:
+    action: 'createSecret'
+    kubernetesServiceConnection: $(kubernetesServiceConnection)
+    namespace: $(namespace)
+    secretType: 'dockerRegistry'
+    secretName: $(imagePullSecret)
+    dockerRegistryEndpoint: $(registry)
+
+- task: KubernetesManifest@0
+  displayName: 'Deployment'
+  inputs:
+    action: 'deploy'
+    kubernetesServiceConnection: '$(kubernetesServiceConnection)'
+    namespace: $(namespace)
+    manifests: |
+      $(Build.SourcesDirectory)/manifests/deployment.yaml
+      $(Build.SourcesDirectory)/manifests/service.yaml
+    imagePullSecrets: $(imagePullSecret)
+    containers: $(containerRegistry)/$(imageName):$(Build.BuildId)
