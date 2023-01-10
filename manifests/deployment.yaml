@@ -1,0 +1,19 @@
+apiVersion : apps/v1
+kind: Deployment
+metadata:
+  name: golang-app 
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: golang-app
+  template:
+    metadata:
+      labels:
+        app: golang-app 
+    spec:
+      containers:
+        - name: golang-app 
+          image: ravirajput.azurecr.io/golang-sample
+          ports:
+          - containerPort: 4000
